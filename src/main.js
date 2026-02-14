@@ -238,12 +238,17 @@ function setGravityFromTilt(beta, gamma) {
 function maybeThrowFromAccel(mag) {
   const now = performance.now()
   // A "throw" gesture: quick acceleration spike
-  if (mag > 18 && now - lastThrowAt > 1200) {
+  // (tuned to be less crazy)
+  if (mag > 22 && now - lastThrowAt > 1600) {
     lastThrowAt = now
-    startRoll({
-      impulseScale: 1.3 + Math.random() * 0.7,
-      torqueScale: 1.3 + Math.random() * 0.7,
-    })
+
+    // Map magnitude to a small multiplier, clamped.
+    // Typical "rest" with gravity is ~9.8; a solid shake might hit 20–30.
+    const extra = Math.max(0, mag - 20)
+    const impulseScale = THREE.MathUtils.clamp(0.75 + extra * 0.03, 0.75, 1.1)
+    const torqueScale = THREE.MathUtils.clamp(0.85 + extra * 0.03, 0.85, 1.2)
+
+    startRoll({ impulseScale, torqueScale })
   }
 }
 
@@ -264,7 +269,9 @@ async function enableMotion() {
 
     window.addEventListener('devicemotion', (e) => {
       if (!motionEnabled) return
-      const a = e.accelerationIncludingGravity || e.acceleration
+
+      // Prefer "acceleration" (without gravity) for a cleaner throw signal.
+      const a = e.acceleration || e.accelerationIncludingGravity
       if (!a) return
       const x = a.x ?? 0
       const y = a.y ?? 0
