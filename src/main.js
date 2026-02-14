@@ -14,8 +14,8 @@ const scene = new THREE.Scene()
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
 // More top-down angle so the top face is readable
-camera.position.set(0, 2.4, 4.6)
-camera.lookAt(0, 0.6, 0)
+camera.position.set(0, 3.2, 6.2)
+camera.lookAt(0, 0.55, 0)
 
 // Lights
 scene.add(new THREE.AmbientLight(0xffffff, 0.55))
