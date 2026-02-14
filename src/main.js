@@ -1,8 +1,10 @@
 import './style.css'
 import * as THREE from 'three'
+import RAPIER from '@dimforge/rapier3d-compat'
 
 const canvas = document.getElementById('c')
 const rollBtn = document.getElementById('rollBtn')
+const resultEl = document.getElementById('result')
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -11,25 +13,25 @@ renderer.setClearColor(0x0b0f17, 1)
 const scene = new THREE.Scene()
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
-camera.position.set(0, 0.6, 3)
+camera.position.set(0, 1.2, 4.2)
 
 // Lights
-scene.add(new THREE.AmbientLight(0xffffff, 0.5))
-const dir = new THREE.DirectionalLight(0xffffff, 1.2)
+scene.add(new THREE.AmbientLight(0xffffff, 0.55))
+const dir = new THREE.DirectionalLight(0xffffff, 1.25)
 dir.position.set(3, 4, 2)
 scene.add(dir)
-const fill = new THREE.DirectionalLight(0x88aaff, 0.5)
+const fill = new THREE.DirectionalLight(0x88aaff, 0.45)
 fill.position.set(-3, -2, 2)
 scene.add(fill)
 
-// Ground glow
-const ground = new THREE.Mesh(
-  new THREE.CircleGeometry(3, 64),
-  new THREE.MeshBasicMaterial({ color: 0x121a2a, transparent: true, opacity: 0.6 })
+// Ground glow (visual only)
+const groundGlow = new THREE.Mesh(
+  new THREE.CircleGeometry(6, 64),
+  new THREE.MeshBasicMaterial({ color: 0x121a2a, transparent: true, opacity: 0.5 })
 )
-ground.rotation.x = -Math.PI / 2
-ground.position.y = -1.05
-scene.add(ground)
+groundGlow.rotation.x = -Math.PI / 2
+groundGlow.position.y = -0.51
+scene.add(groundGlow)
 
 function makeFaceTexture(n) {
   const size = 512
@@ -81,8 +83,7 @@ function makeFaceTexture(n) {
 }
 
 // Face mapping: +X, -X, +Y, -Y, +Z, -Z
-// Make opposite faces sum to 7 on a standard die:
-// 1 opposite 6, 2 opposite 5, 3 opposite 4
+// Opposites sum to 7 on a standard die.
 const faceNums = {
   px: 3,
   nx: 4,
@@ -90,6 +91,15 @@ const faceNums = {
   ny: 2,
   pz: 1,
   nz: 6,
+}
+
+const faceByNormal = {
+  py: faceNums.py,
+  ny: faceNums.ny,
+  px: faceNums.px,
+  nx: faceNums.nx,
+  pz: faceNums.pz,
+  nz: faceNums.nz,
 }
 
 const materials = [
@@ -101,22 +111,11 @@ const materials = [
   new THREE.MeshStandardMaterial({ map: makeFaceTexture(faceNums.nz), roughness: 0.35, metalness: 0.05 }),
 ]
 
-const geom = new THREE.BoxGeometry(1, 1, 1, 1, 1, 1)
-// Slight bevel illusion using normal smoothing + edges
+const geom = new THREE.BoxGeometry(1, 1, 1)
 geom.computeVertexNormals()
 
 const dice = new THREE.Mesh(geom, materials)
 scene.add(dice)
-
-// Dice "physics" (simple toy physics)
-const physics = {
-  active: false,
-  posY: 0,
-  velY: 0,
-  angVel: new THREE.Vector3(),
-  targetQuat: new THREE.Quaternion(),
-  settleT: 0,
-}
 
 // Edges outline
 const edges = new THREE.LineSegments(
@@ -125,12 +124,57 @@ const edges = new THREE.LineSegments(
 )
 dice.add(edges)
 
-// Interaction (touch + mouse drag)
+// --- Rapier physics ---
+await RAPIER.init()
+
+const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+
+// Tray: floor + 4 walls (colliders)
+const tray = {
+  size: 3.2, // inner size
+  wallH: 0.7,
+  thick: 0.2,
+}
+
+function fixedCollider(desc) {
+  world.createCollider(desc)
+}
+
+// Floor at y=0
+fixedCollider(
+  RAPIER.ColliderDesc.cuboid(tray.size / 2, tray.thick / 2, tray.size / 2)
+    .setTranslation(0, -tray.thick / 2, 0)
+    .setFriction(1.0)
+)
+
+// Walls around the tray
+const half = tray.size / 2
+const w = tray.thick / 2
+const h = tray.wallH / 2
+fixedCollider(RAPIER.ColliderDesc.cuboid(w, h, half).setTranslation(half + w, h, 0).setFriction(0.9))
+fixedCollider(RAPIER.ColliderDesc.cuboid(w, h, half).setTranslation(-half - w, h, 0).setFriction(0.9))
+fixedCollider(RAPIER.ColliderDesc.cuboid(half, h, w).setTranslation(0, h, half + w).setFriction(0.9))
+fixedCollider(RAPIER.ColliderDesc.cuboid(half, h, w).setTranslation(0, h, -half - w).setFriction(0.9))
+
+// Dice rigid body + collider
+const diceBody = world.createRigidBody(
+  RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(0, 1.2, 0)
+    .setLinearDamping(0.25)
+    .setAngularDamping(0.35)
+)
+
+world.createCollider(
+  RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5)
+    .setRestitution(0.35)
+    .setFriction(0.85),
+  diceBody
+)
+
+// Input: drag applies angular velocity
 let isDown = false
 let lastX = 0
 let lastY = 0
-let velX = 0
-let velY = 0
 
 function onDown(x, y) {
   isDown = true
@@ -144,17 +188,12 @@ function onMove(x, y) {
   lastX = x
   lastY = y
 
-  // rotate cube
-  const rotSpeed = 0.008
-  dice.rotation.y += dx * rotSpeed
-  dice.rotation.x += dy * rotSpeed
-
-  velX = dx * rotSpeed
-  velY = dy * rotSpeed
+  const rotSpeed = 0.02
+  const av = diceBody.angvel()
+  diceBody.setAngvel({ x: av.x + dy * rotSpeed, y: av.y + dx * rotSpeed, z: av.z }, true)
+  diceBody.wakeUp()
 }
-function onUp() {
-  isDown = false
-}
+function onUp() { isDown = false }
 
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId)
@@ -164,15 +203,74 @@ canvas.addEventListener('pointermove', (e) => onMove(e.clientX, e.clientY))
 canvas.addEventListener('pointerup', onUp)
 canvas.addEventListener('pointercancel', onUp)
 
+// Double-tap reset
 let lastTap = 0
 canvas.addEventListener('pointerdown', () => {
   const now = performance.now()
-  if (now - lastTap < 350) {
-    dice.rotation.set(0.35, 0.6, 0)
-    velX = velY = 0
-  }
+  if (now - lastTap < 350) resetDice()
   lastTap = now
 })
+
+function resetDice() {
+  diceBody.setTranslation({ x: 0, y: 1.2, z: 0 }, true)
+  diceBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+  diceBody.setAngvel({ x: 0, y: 0, z: 0 }, true)
+  diceBody.wakeUp()
+  if (resultEl) resultEl.textContent = 'Result: —'
+}
+
+function startRoll() {
+  // Random throw: upward impulse + random torque
+  const impulseY = 6 + Math.random() * 6
+  const impulseX = (Math.random() - 0.5) * 1.5
+  const impulseZ = (Math.random() - 0.5) * 1.5
+
+  // Reset to above center with slight random offset
+  diceBody.setTranslation({ x: (Math.random() - 0.5) * 0.4, y: 1.2, z: (Math.random() - 0.5) * 0.4 }, true)
+  diceBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
+  diceBody.setAngvel({ x: 0, y: 0, z: 0 }, true)
+
+  diceBody.applyImpulse({ x: impulseX, y: impulseY, z: impulseZ }, true)
+  diceBody.applyTorqueImpulse(
+    {
+      x: (Math.random() - 0.5) * 12,
+      y: (Math.random() - 0.5) * 12,
+      z: (Math.random() - 0.5) * 12,
+    },
+    true
+  )
+
+  diceBody.wakeUp()
+  if (resultEl) resultEl.textContent = 'Result: …'
+}
+
+rollBtn?.addEventListener('click', startRoll)
+
+function getTopFaceValue() {
+  const q = dice.quaternion
+  const up = new THREE.Vector3(0, 1, 0)
+
+  const normals = {
+    py: new THREE.Vector3(0, 1, 0),
+    ny: new THREE.Vector3(0, -1, 0),
+    px: new THREE.Vector3(1, 0, 0),
+    nx: new THREE.Vector3(-1, 0, 0),
+    pz: new THREE.Vector3(0, 0, 1),
+    nz: new THREE.Vector3(0, 0, -1),
+  }
+
+  let bestKey = 'py'
+  let bestDot = -Infinity
+  for (const [k, n] of Object.entries(normals)) {
+    const wn = n.clone().applyQuaternion(q)
+    const d = wn.dot(up)
+    if (d > bestDot) {
+      bestDot = d
+      bestKey = k
+    }
+  }
+  return faceByNormal[bestKey]
+}
 
 function resize() {
   const w = window.innerWidth
@@ -184,135 +282,34 @@ function resize() {
 window.addEventListener('resize', resize)
 resize()
 
-dice.rotation.set(0.35, 0.6, 0)
-
-// Precomputed orientations for a cube with a given face UP (+Y).
-// We only care that the top face result matches a D6 value.
-const faceByNormal = {
-  py: faceNums.py,
-  ny: faceNums.ny,
-  px: faceNums.px,
-  nx: faceNums.nx,
-  pz: faceNums.pz,
-  nz: faceNums.nz,
-}
-
-function quatToPutNormalUp(key) {
-  // rotates cube so that the given local normal points to world +Y
-  switch (key) {
-    case 'py': return new THREE.Quaternion() // already up
-    case 'ny': return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
-    case 'px': return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)
-    case 'nx': return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
-    case 'pz': return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2)
-    case 'nz': return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)
-    default: return new THREE.Quaternion()
-  }
-}
-
-const topKeys = ['py', 'ny', 'px', 'nx', 'pz', 'nz']
-
-function randomRollTargetQuaternion() {
-  // Pick which face ends UP
-  const upKey = topKeys[Math.floor(Math.random() * topKeys.length)]
-  const base = quatToPutNormalUp(upKey)
-
-  // Random spin around world up axis so the dice can land with different yaw
-  const yaw = (Math.PI / 2) * Math.floor(Math.random() * 4)
-  const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
-
-  return {
-    quat: qYaw.multiply(base),
-    value: faceByNormal[upKey],
-  }
-}
-
-function startRoll() {
-  if (physics.active) return
-
-  physics.active = true
-  physics.posY = 0
-  physics.velY = 2.2 + Math.random() * 2.2 // throw height
-  physics.angVel.set(
-    (Math.random() - 0.5) * 14,
-    (Math.random() - 0.5) * 14,
-    (Math.random() - 0.5) * 14,
-  )
-
-  const { quat, value } = randomRollTargetQuaternion()
-  physics.targetQuat.copy(quat)
-  physics.settleT = 0
-
-  // Update button label briefly
-  rollBtn.textContent = 'Rolling…'
-  rollBtn.disabled = true
-  setTimeout(() => {
-    rollBtn.textContent = `Roll (last: ${value})`
-  }, 500)
-}
-
-rollBtn?.addEventListener('click', startRoll)
-
 let lastT = performance.now()
+let settleFrames = 0
 function animate(t = performance.now()) {
   requestAnimationFrame(animate)
   const dt = Math.min((t - lastT) / 1000, 1 / 30)
   lastT = t
 
-  // User drag inertia only when not rolling
-  if (!physics.active && !isDown) {
-    dice.rotation.y += velX
-    dice.rotation.x += velY
-    velX *= 0.92
-    velY *= 0.92
-  }
+  world.timestep = dt
+  world.step()
 
-  // Toy physics roll
-  if (physics.active) {
-    // gravity
-    physics.velY += -9.8 * dt
-    physics.posY += physics.velY * dt
+  // Sync Three mesh from Rapier body
+  const p = diceBody.translation()
+  const r = diceBody.rotation()
+  dice.position.set(p.x, p.y, p.z)
+  dice.quaternion.set(r.x, r.y, r.z, r.w)
 
-    // bounce on "ground" at y=0
-    if (physics.posY < 0) {
-      physics.posY = 0
-      physics.velY = Math.abs(physics.velY) * (0.45 + Math.random() * 0.05)
-      physics.angVel.multiplyScalar(0.85)
+  // Detect settle: low velocity for a short while
+  const lv = diceBody.linvel()
+  const av = diceBody.angvel()
+  const speed = Math.abs(lv.x) + Math.abs(lv.y) + Math.abs(lv.z)
+  const spin = Math.abs(av.x) + Math.abs(av.y) + Math.abs(av.z)
 
-      // when low energy, start settling
-      const energy = Math.abs(physics.velY) + physics.angVel.length() * 0.02
-      if (energy < 0.35) {
-        physics.settleT += dt * 1.4
-      }
-    }
+  if (speed < 0.03 && spin < 0.03 && p.y < 0.7) settleFrames++
+  else settleFrames = 0
 
-    // apply angular velocity
-    const q = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(
-        physics.angVel.x * dt,
-        physics.angVel.y * dt,
-        physics.angVel.z * dt,
-        'XYZ'
-      )
-    )
-    dice.quaternion.multiply(q)
-
-    // move dice
-    dice.position.y = physics.posY
-
-    // settle towards a valid final orientation
-    if (physics.settleT > 0) {
-      const a = THREE.MathUtils.clamp(physics.settleT, 0, 1)
-      dice.quaternion.slerp(physics.targetQuat, a)
-
-      // finish
-      if (a >= 1) {
-        physics.active = false
-        dice.position.y = 0
-        rollBtn.disabled = false
-        rollBtn.textContent = 'Roll'
-      }
-    }
+  if (settleFrames === 20) {
+    const value = getTopFaceValue()
+    if (resultEl) resultEl.textContent = `Result: ${value}`
   }
 
   renderer.render(scene, camera)
