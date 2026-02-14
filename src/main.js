@@ -4,6 +4,7 @@ import RAPIER from '@dimforge/rapier3d-compat'
 
 const canvas = document.getElementById('c')
 const rollBtn = document.getElementById('rollBtn')
+const motionBtn = document.getElementById('motionBtn')
 const resultEl = document.getElementById('result')
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
@@ -213,6 +214,78 @@ canvas.addEventListener('pointerdown', () => {
   lastTap = now
 })
 
+// --- Device motion / gyro support ---
+let motionEnabled = false
+let latestBeta = 0   // front/back tilt
+let latestGamma = 0  // left/right tilt
+let accelMag = 0
+let lastThrowAt = 0
+
+function setGravityFromTilt(beta, gamma) {
+  // Clamp and map degrees -> gravity vector
+  const b = THREE.MathUtils.clamp(beta, -45, 45) * (Math.PI / 180)
+  const g = THREE.MathUtils.clamp(gamma, -45, 45) * (Math.PI / 180)
+
+  // World axes: x right, y up, z forward.
+  // Tilt device to tilt gravity in X/Z.
+  const gx = Math.sin(g) * 9.81
+  const gz = Math.sin(b) * 9.81
+  const gy = -Math.cos(g) * Math.cos(b) * 9.81
+
+  world.gravity = { x: gx, y: gy, z: gz }
+}
+
+function maybeThrowFromAccel(mag) {
+  const now = performance.now()
+  // A "throw" gesture: quick acceleration spike
+  if (mag > 18 && now - lastThrowAt > 1200) {
+    lastThrowAt = now
+    startRoll({
+      impulseScale: 1.3 + Math.random() * 0.7,
+      torqueScale: 1.3 + Math.random() * 0.7,
+    })
+  }
+}
+
+async function enableMotion() {
+  try {
+    // iOS Safari requires permission prompt from a user gesture
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const res = await DeviceMotionEvent.requestPermission()
+      if (res !== 'granted') throw new Error('Motion permission not granted')
+    }
+
+    window.addEventListener('deviceorientation', (e) => {
+      if (!motionEnabled) return
+      if (typeof e.beta === 'number') latestBeta = e.beta
+      if (typeof e.gamma === 'number') latestGamma = e.gamma
+      setGravityFromTilt(latestBeta, latestGamma)
+    })
+
+    window.addEventListener('devicemotion', (e) => {
+      if (!motionEnabled) return
+      const a = e.accelerationIncludingGravity || e.acceleration
+      if (!a) return
+      const x = a.x ?? 0
+      const y = a.y ?? 0
+      const z = a.z ?? 0
+      accelMag = Math.sqrt(x * x + y * y + z * z)
+      maybeThrowFromAccel(accelMag)
+    })
+
+    motionEnabled = true
+    motionBtn.textContent = 'Motion: ON'
+    motionBtn.disabled = true
+    if (resultEl) resultEl.textContent = 'Result: — (tilt to steer, shake/throw to roll)'
+  } catch (err) {
+    console.warn(err)
+    motionBtn.textContent = 'Enable Motion (blocked)'
+    if (resultEl) resultEl.textContent = 'Result: — (motion permission blocked)'
+  }
+}
+
+motionBtn?.addEventListener('click', enableMotion)
+
 function resetDice() {
   diceBody.setTranslation({ x: 0, y: 1.2, z: 0 }, true)
   diceBody.setLinvel({ x: 0, y: 0, z: 0 }, true)
@@ -221,11 +294,14 @@ function resetDice() {
   if (resultEl) resultEl.textContent = 'Result: —'
 }
 
-function startRoll() {
+function startRoll(opts = {}) {
+  const impulseScale = opts.impulseScale ?? 1
+  const torqueScale = opts.torqueScale ?? 1
+
   // Random throw: upward impulse + random torque
-  const impulseY = 6 + Math.random() * 6
-  const impulseX = (Math.random() - 0.5) * 1.5
-  const impulseZ = (Math.random() - 0.5) * 1.5
+  const impulseY = (6 + Math.random() * 6) * impulseScale
+  const impulseX = (Math.random() - 0.5) * 1.5 * impulseScale
+  const impulseZ = (Math.random() - 0.5) * 1.5 * impulseScale
 
   // Reset to above center with slight random offset
   diceBody.setTranslation({ x: (Math.random() - 0.5) * 0.4, y: 1.2, z: (Math.random() - 0.5) * 0.4 }, true)
@@ -235,9 +311,9 @@ function startRoll() {
   diceBody.applyImpulse({ x: impulseX, y: impulseY, z: impulseZ }, true)
   diceBody.applyTorqueImpulse(
     {
-      x: (Math.random() - 0.5) * 12,
-      y: (Math.random() - 0.5) * 12,
-      z: (Math.random() - 0.5) * 12,
+      x: (Math.random() - 0.5) * 12 * torqueScale,
+      y: (Math.random() - 0.5) * 12 * torqueScale,
+      z: (Math.random() - 0.5) * 12 * torqueScale,
     },
     true
   )
@@ -246,7 +322,7 @@ function startRoll() {
   if (resultEl) resultEl.textContent = 'Result: …'
 }
 
-rollBtn?.addEventListener('click', startRoll)
+rollBtn?.addEventListener('click', () => startRoll())
 
 function getTopFaceValue() {
   const q = dice.quaternion

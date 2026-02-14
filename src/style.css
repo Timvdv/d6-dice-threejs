@@ -3,4 +3,5 @@
 .hud h1{font-size:16px;margin:0 0 4px 0}
 .hud p{font-size:12px;margin:0 0 8px 0;opacity:.9}
 .hud button{appearance:none;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#fff;padding:8px 10px;border-radius:8px;font-size:13px;cursor:pointer}
+.hud button[disabled]{opacity:.55;cursor:not-allowed}
 .hud button:active{transform:translateY(1px)}
